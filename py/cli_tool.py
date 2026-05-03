@@ -575,7 +575,7 @@ async def docker_sandbox(command: str, background: bool = False, timeout: int = 
 
         except asyncio.TimeoutError:
             process.kill()
-            yield f"\n\n[TIMEOUT ERROR] Docker 命令执行超过 {effective_timeout} 秒已强制终止。"
+            yield f"\n\n[TIMEOUT ERROR] Docker 命令执行超过 {effective_timeout} 秒已强制终止。注意！命令并未完全执行完毕。"
     except Exception as e:
         yield f"[ERROR] Docker 进程启动失败: {str(e)}"
 
@@ -1201,7 +1201,7 @@ async def shell_tool_local(command: str, background: bool = False, timeout: int 
             else:
                 try: os.killpg(os.getpgid(process.pid), signal.SIGKILL)
                 except: process.kill()
-            yield f"\n\n[TIMEOUT ERROR] 命令执行超过 {effective_timeout} 秒已强制终止。"
+            yield f"\n\n[TIMEOUT ERROR] 命令执行超过 {effective_timeout} 秒已强制终止。注意！命令并未完全执行完毕。"
             yield "\n💡 提示：对于启动应用或大文件下载，请使用 'background': true。"
     except Exception as e: 
         yield f"[系统错误] 无法启动进程: {str(e)}"
