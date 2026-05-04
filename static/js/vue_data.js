@@ -2262,4 +2262,9 @@ main();`,
     searchExtensionQuery: '',
     searchManageExtensionQuery: '', // 用于主页面的扩展搜索
     searchRemotePluginQuery: '',    // 用于弹窗内的远程插件搜索
+    scrollPending: false,              // 滚动节流标记
+    _streamUpdateTimer: null,          // 流式文本批量更新定时器
+    _streamTextBuffer: '',             // 流式文本缓冲区
+    _streamTargetMsg: null,            // 当前正在流式更新的消息对象
+
 };
