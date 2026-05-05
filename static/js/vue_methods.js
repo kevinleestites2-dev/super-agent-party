@@ -983,7 +983,7 @@ let vue_methods = {
         })
       }
       this.inAutoMode = false; // 重置自动模式状态
-      this.scrollToBottom();
+      this.requestScrollToBottom();
       this.sendMessagesToExtension(); // 发送消息到插件
       this.$nextTick(() => {
           setTimeout(() => {
@@ -2488,7 +2488,7 @@ let vue_methods = {
         this.images = [];
         this.userInput = '';
         
-        this.$nextTick(() => { this.scrollToBottom(); });
+        this.$nextTick(() => { this.requestScrollToBottom(); });
 
         // --- 调度逻辑：群聊 vs 单聊 ---
         this.isSending = true; 
@@ -2549,16 +2549,16 @@ let vue_methods = {
     // 2. AI 生成与流式处理函数（支持 Human-in-the-loop 审批）
     // ==========================================
     async generateAIResponse(targetAgentId, agentDisplayName = null, isResume = false) {
-        this.startTimer(); 
-        this.voiceStack = ['default']; 
+        this.startTimer();
+        this.voiceStack = ['default'];
         let tts_buffer = '';
         let isCodeBlock = false;
         this.cur_voice = 'default';
-        
-        const toolCallStack = [];
-        this.toolArgsAccumulator = this.toolArgsAccumulator || {}; 
 
-        // 内部函数：准备发送给 API 的消息历史
+        const toolCallStack = [];
+        this.toolArgsAccumulator = this.toolArgsAccumulator || {};
+
+        // 内部函数：准备发送给 API 的消息历史（保持不变）
         const prepareMessages = (msgs) => {
             const rawMessages = msgs.flatMap(msg => {
                 const userName = this.memorySettings?.userName || 'User';
@@ -2572,10 +2572,8 @@ let vue_methods = {
                     if (msg.imageLinks && msg.imageLinks.length > 0) {
                         const contentArray = [{ type: "text", text: finalContent }];
                         msg.imageLinks.forEach(imageLink => {
-                            // 【修复核心1】：恢复 V1 的视频格式后缀判断
                             const ext = imageLink.path.split('.').pop().toLowerCase();
                             const videoExts = ['mp4', 'webm', 'ogg', 'mov', 'avi'];
-                            
                             if (videoExts.includes(ext)) {
                                 contentArray.push({ type: "video_url", video_url: { url: imageLink.path } });
                             } else {
@@ -2603,10 +2601,8 @@ let vue_methods = {
                 if (msg.imageLinks && msg.imageLinks.length > 0) {
                     const contentArray = [{ type: "text", text: textContent }];
                     msg.imageLinks.forEach(imageLink => {
-                        // 【修复核心2】：恢复 V1 的视频格式后缀判断
                         const ext = imageLink.path.split('.').pop().toLowerCase();
                         const videoExts = ['mp4', 'webm', 'ogg', 'mov', 'avi'];
-                        
                         if (videoExts.includes(ext)) {
                             contentArray.push({ type: "video_url", video_url: { url: imageLink.path } });
                         } else {
@@ -2649,70 +2645,78 @@ let vue_methods = {
 
         // 第一步：打包 Payload
         let messagesPayload = prepareMessages(this.messages);
-
-        // 第二步：注入扩展的 System Prompts
-        if(this.extensionsSystemPromptsDict){
+        if (this.extensionsSystemPromptsDict) {
             const combinedPrompt = Object.values(this.extensionsSystemPromptsDict).filter(Boolean).join('\n\n');
-            if (messagesPayload[0].role === 'system') messagesPayload[0].content += '\n\n' + combinedPrompt;
+            if (messagesPayload[0]?.role === 'system') messagesPayload[0].content += '\n\n' + combinedPrompt;
             else messagesPayload.unshift({ role: 'system', content: combinedPrompt });
         }
 
-        // 第三步：创建或复用给助手用的坑位
         let currentMsg;
         let shouldSyncGroupMemory = false;
         if (isResume && this.messages.length > 0) {
             currentMsg = this.messages[this.messages.length - 1];
-            currentMsg.generationFinished = false; 
+            currentMsg.generationFinished = false;
         } else {
             const newMsgData = {
                 id: Date.now() + Math.random(),
                 role: 'assistant',
-                agentName: agentDisplayName, 
-                content: '',
-                pure_content: '', 
+                agentName: agentDisplayName,
+                content: '',         // 不再使用 HTML，最后会被清空
+                pure_content: '',
                 backend_content: [{ role: 'assistant', content: '' }],
-                toolBlocks: {}, 
-                displayBlocks: [], // V2 新增双轨渲染支撑
-                isOmni: this.settings.enableOmniTTS || this.fastSettings.enableOmniTTS, 
-                omniAudioChunks: [], ttsChunks: [], chunks_voice: [], audioChunks: [], 
-                isPlaying: false, total_tokens: 0, first_token_latency: 0, elapsedTime: 0, 
+                toolBlocks: {},
+                displayBlocks: [],
+                isOmni: this.settings.enableOmniTTS || this.fastSettings.enableOmniTTS,
+                omniAudioChunks: [], ttsChunks: [], chunks_voice: [], audioChunks: [],
+                isPlaying: false, total_tokens: 0, first_token_latency: 0, elapsedTime: 0,
                 generationFinished: false
             };
             this.messages.push(newMsgData);
-            currentMsg = this.messages[this.messages.length - 1]; 
+            currentMsg = this.messages[this.messages.length - 1];
         }
         const latestUserMessage = [...this.messages].reverse().find(msg => msg.role === 'user');
 
+        // 获取块的辅助函数（带冻结，支持流式复用）
         const getBlock = (type, id = null, name = null) => {
-            if (!currentMsg.displayBlocks) currentMsg.displayBlocks =[];
+            if (!currentMsg.displayBlocks) currentMsg.displayBlocks = [];
+            const blocks = currentMsg.displayBlocks;
             
-            // 【核心修复】：如果有明确的 ID，先全局查找是否已经有这个块。
-            // 解决大模型穿插输出文字，导致 tool_call/tool_result 块不再是最后一块而被误当成新块的问题。
+            // 如果有 id，先查找已存在的块（如 tool_call / tool_result 复用）
             if (id) {
-                const existingBlock = currentMsg.displayBlocks.find(b => b.type === type && b.id === id);
-                if (existingBlock) {
-                    if (name && !existingBlock.name) existingBlock.name = name;
-                    return existingBlock;
+                const existing = blocks.find(b => b.type === type && b.id === id);
+                if (existing) {
+                    if (name && !existing.name) existing.name = name;
+                    return existing;
                 }
             }
-
-            let last = currentMsg.displayBlocks[currentMsg.displayBlocks.length - 1];
-            const canReuse = last && last.type === type && (!id || last.id === id);
+            
+            // 检查最后一个块是否可复用（类型相同且未被冻结）
+            const last = blocks[blocks.length - 1];
+            const canReuse = last && last.type === type && !Object.isFrozen(last) && (!id || last.id === id);
             if (canReuse) {
                 if (name && !last.name) last.name = name;
                 return last;
             }
+            
+            // 不复用，先冻结上一个不同类型的块（使其脱离响应式）
+            if (last && !Object.isFrozen(last)) {
+                Object.freeze(last);
+                if (typeof last.content === 'string') Object.freeze(last.content);
+                if (typeof last.args === 'string') Object.freeze(last.args);
+                if (last.data) Object.freeze(last.data);
+            }
+            
+            // 创建新块并推入数组
             const newBlock = { type, id, name, content: '', args: '', data: null };
-            currentMsg.displayBlocks.push(newBlock);
+            blocks.push(newBlock);
             return newBlock;
         };
 
-        this.$nextTick(() => { this.scrollToBottom(); });
+        this.$nextTick(() => { this.requestScrollToBottom(); });
 
         let audioResolve = null;
         let audioProcess = null;
         const audioPromise = new Promise((resolve) => { audioResolve = resolve; });
-        
         if (this.ttsSettings.enabled) {
             this.startTTSProcess(currentMsg);
             this.startAudioPlayProcess(currentMsg, audioResolve);
@@ -2730,7 +2734,7 @@ let vue_methods = {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     model: targetAgentId,
-                    messages: messagesPayload, 
+                    messages: messagesPayload,
                     stream: true,
                     fileLinks: this.fileLinks,
                     asyncToolsID: this.asyncToolsID || [],
@@ -2739,22 +2743,19 @@ let vue_methods = {
                     group_id: this.stringifyEntityId(this.activeConversationGroupId || this.draftConversationGroupId || 'default'),
                     user_message_id: this.stringifyEntityId(latestUserMessage?.id || null),
                 }),
-                signal: this.abortController.signal 
+                signal: this.abortController.signal
             });
-            
+
             if (!response.ok) {
                 let errText = await response.text();
-                try {
-                    const errObj = JSON.parse(errText);
-                    errText = errObj.error?.message || errText;
-                } catch(e) {}
+                try { const errObj = JSON.parse(errText); errText = errObj.error?.message || errText; } catch (e) { }
                 throw new Error(errText);
             }
-            
+
             const contentType = response.headers.get('content-type');
             if (contentType && contentType.includes('application/json')) {
                 let errText = await response.text();
-                try { const errObj = JSON.parse(errText); errText = errObj.error?.message || errText; } catch(e) {}
+                try { const errObj = JSON.parse(errText); errText = errObj.error?.message || errText; } catch (e) { }
                 throw new Error(errText);
             }
 
@@ -2762,16 +2763,20 @@ let vue_methods = {
             const decoder = new TextDecoder();
             let buffer = '';
 
+            // 初始化流式文本批量更新状态
+            this._streamTargetMsg = currentMsg;
+            this._streamTextBuffer = '';
+
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
                 buffer += decoder.decode(value, { stream: true });
-                
+
                 while (buffer.includes('\n\n')) {
                     const eventEndIndex = buffer.indexOf('\n\n');
                     const eventData = buffer.slice(0, eventEndIndex);
                     buffer = buffer.slice(eventEndIndex + 2);
-                    
+
                     if (eventData.startsWith('data: ')) {
                         const jsonStr = eventData.slice(6).trim();
                         if (jsonStr === '[DONE]') break;
@@ -2779,64 +2784,53 @@ let vue_methods = {
                         const delta = parsed.choices?.[0]?.delta;
                         if (!delta) continue;
 
-                        if (currentMsg.content === '' && !isResume) { 
-                            this.stopTimer(); 
+                        if (currentMsg.content === '' && !isResume) {
+                            this.stopTimer();
                             currentMsg.first_token_latency = this.elapsedTime;
                         }
 
-                        // A. 处理思考 (Reasoning)
+                        // A. 处理思考 (Reasoning) —— 仅更新 displayBlocks，不拼 HTML
                         if (delta.reasoning_content) {
-                            getBlock('reasoning').content += delta.reasoning_content; 
-                            if (!this.isThinkOpen) {
-                                currentMsg.content += '<div class="sap-process-block type-reasoning"><div class="sp-header"><i class="fa-solid fa-brain"></i> Thinking Process</div><div class="sp-content">';
-                                this.isThinkOpen = true;
-                            }
-                            currentMsg.content += delta.reasoning_content.replace(/\n/g, '<br>');
-                            this.scrollToBottom();
+                            const block = getBlock('reasoning');
+                            block.content += delta.reasoning_content;
+                            // 不再操作 currentMsg.content
+                            this.requestScrollToBottom();
                         }
 
-                        // B. 处理文本 (Content)
+                        // B. 处理文本 (Content) —— 流式防抖更新
                         if (delta.content) {
-                            getBlock('text').content += delta.content; 
-                            if (this.isThinkOpen) { 
-                                currentMsg.content += '</div></div>\n\n'; 
-                                this.isThinkOpen = false; 
-                            }
-                            currentMsg.content += delta.content; 
-                            currentMsg.pure_content += delta.content;
+                            // 缓冲文本，不再直接操作 DOM
+                            this._streamTextBuffer += delta.content;
 
-                            let last = currentMsg.backend_content[currentMsg.backend_content.length - 1];
-                            if (last.role !== 'assistant' || (last.tool_calls && last.tool_calls.length > 0)) {
-                                currentMsg.backend_content.push({ role: 'assistant', content: delta.content });
-                            } else {
-                                last.content += delta.content;
+                            // 为 TTS 即时处理
+                            const parts = delta.content.split('```');
+                            for (let i = 0; i < parts.length; i++) {
+                                if (!isCodeBlock) { tts_buffer += parts[i]; }
+                                if (i < parts.length - 1) { isCodeBlock = !isCodeBlock; }
                             }
-                            this.scrollToBottom();
-                            
-                            if (this.ttsSettings.enabled) {
-                                const parts = delta.content.split('```');
-                                for (let i = 0; i < parts.length; i++) {
-                                    if (!isCodeBlock) { tts_buffer += parts[i]; }
-                                    if (i < parts.length - 1) { isCodeBlock = !isCodeBlock; }
-                                }
-                                const { chunks, chunks_voice, remaining, remaining_voice } = this.splitTTSBuffer(tts_buffer);
-                                if (chunks.length > 0) {
-                                    currentMsg.chunks_voice.push(...chunks_voice);
-                                    currentMsg.ttsChunks.push(...chunks);
-                                }
-                                tts_buffer = remaining;
-                                this.cur_voice = remaining_voice;
+                            const { chunks, chunks_voice, remaining, remaining_voice } = this.splitTTSBuffer(tts_buffer);
+                            if (chunks.length > 0) {
+                                currentMsg.chunks_voice.push(...chunks_voice);
+                                currentMsg.ttsChunks.push(...chunks);
                             }
+                            tts_buffer = remaining;
+                            this.cur_voice = remaining_voice;
+
+                            // 防抖合并到 displayBlocks
+                            if (this._streamUpdateTimer) clearTimeout(this._streamUpdateTimer);
+                            this._streamUpdateTimer = setTimeout(() => {
+                                this.flushStreamTextBuffer();
+                            }, 80);
                         }
 
-                        // C. 处理工具 Loading 状态
+                        // C. 工具 Loading 状态 (tool_progress) —— 只更新 displayBlocks
                         if (delta.tool_progress) {
                             const progress = delta.tool_progress;
-                            let toolCallId = progress.tool_call_id || progress.id; 
-                            
+                            let toolCallId = progress.tool_call_id || progress.id;
+
                             if (!toolCallId) {
                                 const existingCall = toolCallStack.find(c => c.name === progress.name && !c.resolved);
-                                if (existingCall) { toolCallId = existingCall.id; } 
+                                if (existingCall) { toolCallId = existingCall.id; }
                                 else {
                                     toolCallId = `call_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
                                     toolCallStack.push({ id: toolCallId, name: progress.name, resolved: false });
@@ -2848,46 +2842,21 @@ let vue_methods = {
                             let accArgs = this.toolArgsAccumulator[toolCallId] || "";
                             if (progress.arguments !== undefined) {
                                 if (progress.arguments.startsWith(accArgs) && accArgs !== "") {
-                                    accArgs = progress.arguments; 
+                                    accArgs = progress.arguments;
                                 } else {
-                                    accArgs += progress.arguments; 
+                                    accArgs += progress.arguments;
                                 }
                                 this.toolArgsAccumulator[toolCallId] = accArgs;
                             }
-                            
+
                             const b = getBlock('tool_call', toolCallId, progress.name);
                             b.args = accArgs;
-
-                            const blockId = `tool-call-${toolCallId}`;
-                            const existingBlock = currentMsg.content.includes(`id="${blockId}"`);
-                            const readableArgs = accArgs ? accArgs.replace(/\\n/g, '\n').replace(/\\"/g, '"') : '';
-                            const displayArgs = escapeHtml(readableArgs);
-                            
-                            if (!existingBlock) {
-                                if (this.isThinkOpen) { 
-                                    currentMsg.content += '</div></div>\n\n'; 
-                                    this.isThinkOpen = false; 
-                                }
-                                let html = `\n<div class="sap-process-block type-call" id="${blockId}">`;
-                                html += `<div class="sp-header"><i class="fa-solid fa-wrench"></i> ${this.t('call')} <span>${progress.name}</span></div>`;
-                                html += `<pre class="sp-content sp-code">${displayArgs}</pre>`;
-                                html += '</div>\n\n';
-                                currentMsg.content += html;
-
-                            } else {
-                                const blockStart = currentMsg.content.indexOf(`id="${blockId}"`);
-                                const preStart = currentMsg.content.indexOf('<pre', blockStart);
-                                const contentStart = currentMsg.content.indexOf('>', preStart) + 1;
-                                const preEnd = currentMsg.content.indexOf('</pre>', contentStart);
-                                if (contentStart > 0 && preEnd > 0) {
-                                    currentMsg.content = currentMsg.content.substring(0, contentStart) + displayArgs + currentMsg.content.substring(preEnd);
-                                }
-                            }
-                            this.scrollToBottom();
+                            // 不再生成 HTML 字符串
+                            this.requestScrollToBottom();
                             continue;
                         }
 
-                        // D. 处理工具结果 (Result / Error / Approval)
+                        // D. 工具结果 / 错误 / 审批 —— 仅更新 displayBlocks + backend_content
                         if (delta.tool_content) {
                             const tool = delta.tool_content;
                             const toolName = tool.title || 'unknown';
@@ -2906,7 +2875,7 @@ let vue_methods = {
                                 const callItem = toolCallStack.find(c => c.id === toolCallId);
                                 if (callItem) callItem.resolved = true;
                             }
-                            
+
                             if (delta.async_tool_id && (tool.type === 'tool_result' || tool.type === 'error')) {
                                 if (this.asyncToolsID) {
                                     const index = this.asyncToolsID.indexOf(delta.async_tool_id);
@@ -2923,56 +2892,29 @@ let vue_methods = {
 
                             if (tool.type === 'tool_approval') {
                                 isApproval = true;
-                                try { approvalData = JSON.parse(tool.content); } catch(e){ console.error(e); }
+                                try { approvalData = JSON.parse(tool.content); } catch (e) { }
                             } else if (tool.type === 'tool_result' && typeof tool.content === 'string' && tool.content.includes('"approval_required"')) {
                                 try {
                                     const temp = JSON.parse(tool.content);
                                     if (temp.type === 'approval_required') { isApproval = true; approvalData = temp; }
-                                } catch (e) {}
+                                } catch (e) { }
                             }
 
+                            // 审批逻辑
                             if (isApproval && approvalData) {
                                 const b = getBlock('approval', toolCallId, toolName);
                                 b.data = approvalData;
-
-                                if (this.isThinkOpen) { 
-                                    currentMsg.content += '</div></div>\n\n'; 
-                                    this.isThinkOpen = false; 
-                                }
-                                const blockId = `approval-${toolCallId}`;
                                 this.approvalMap[toolCallId] = approvalData;
-                                
-                                let html = `\n<div class="approval-card" id="${blockId}">`;
-                                html += `<div class="approval-header">
-                                            <i class="fa-solid fa-shield-halved security-icon"></i>
-                                            <span>${this.t('permissionRequest')} <span class="permission-mode-tag">${approvalData.permission_mode}</span></span>
-                                        </div>`;
-                                html += `<div class="approval-body">
-                                            <span class="body-label">${this.t('AIwantsToExecute')}:</span>
-                                            <code class="tool-name-badge">${approvalData.tool_name}</code>
-                                        </div>`;
-                                html += `<div class="approval-params-wrapper">
-                                            <div class="params-header">PARAMETERS</div>
-                                            <pre class="approval-params-code">${escapeHtml(JSON.stringify(approvalData.tool_params, null, 2))}</pre>
-                                        </div>`;
-                                html += `<div class="approval-actions">`;
-                                html += `<button onclick="window.handleToolApproval('${toolCallId}', 'deny')" class="btn-deny"><i class="fa-solid fa-ban"></i> ${this.t('Deny')}</button>`;
-                                html += `<div class="action-right-group">`;
-                                html += `<button onclick="window.handleToolApproval('${toolCallId}', 'always')" class="btn-allow-always">${this.t('AllowAlways')}</button>`;
-                                html += `<button onclick="window.handleToolApproval('${toolCallId}', 'once')" class="btn-allow-once">${this.t('AllowOnce')}</button>`;
-                                html += `</div></div></div>\n`;
 
-                                currentMsg.content += html;
-
+                                // 不再生成 HTML，直接更新 backend_content
                                 currentMsg.backend_content.push({ role: 'tool', tool_call_id: toolCallId, name: toolName, content: "{}" });
                                 currentMsg.backend_content.push({ role: 'assistant', content: '' });
-                                this.scrollToBottom();
-                            } 
+                                this.requestScrollToBottom();
+                            }
                             else if (tool.type === 'tool_result_stream' && tool.title === "tool_result_stream") {
-                                // 1. 获取当前块并使用 smartMergeTerminal 更新（解决进度条刷屏）
                                 const targetBlock = getBlock('tool_result', toolCallId, toolName);
                                 targetBlock.content = this.smartMergeTerminal(targetBlock.content, tool.content);
-                                
+                                // 更新 backend_content
                                 const lastToolIndex = currentMsg.backend_content.length - 1;
                                 for (let i = lastToolIndex; i >= 0; i--) {
                                     if (currentMsg.backend_content[i].role === 'tool' && currentMsg.backend_content[i].tool_call_id === toolCallId) {
@@ -2981,47 +2923,21 @@ let vue_methods = {
                                     }
                                 }
                             } else {
-                                // 【核心修复】：分离 tool_call 和 tool_result，不要把 call 强行转成 result
                                 let bType = 'tool_result';
                                 if (tool.type === 'error') bType = 'error';
-                                else if (tool.type === 'call') bType = 'tool_call'; // 还原它本身的身份
+                                else if (tool.type === 'call') bType = 'tool_call';
 
                                 const targetBlock = getBlock(bType, toolCallId, toolName);
                                 
-                                // 根据类型，放入对应的字段中 (call 是放入 args，result 是放入 content)
+                                // 截断显示内容（只影响 UI 显示）
                                 if (tool.type === 'call') {
-                                    targetBlock.args = tool.content; 
+                                    targetBlock.args = tool.content;
                                 } else {
-                                    targetBlock.content = tool.content;
+                                    targetBlock.content = this.truncateDisplayContent(tool.content);
                                 }
 
-                                if (this.isThinkOpen) { 
-                                    currentMsg.content += '</div></div>\n\n'; 
-                                    this.isThinkOpen = false; 
-                                }
-                                const blockId = tool.type === 'call' ? `tool-call-${toolCallId}` : `tool-result-${toolCallId}`;
-                                const isCallAlreadyRendered = (tool.type === 'call' && currentMsg.content.includes(`id="${blockId}"`));
-
-                                if (!isCallAlreadyRendered) {
-                                  let blockClass = (tool.type === 'error') ? 'type-error' : (tool.type === 'call' ? 'type-call' : 'type-result');
-                                  let iconClass = (tool.type === 'error') ? 'fa-xmark' : (tool.type === 'call' ? 'fa-wrench' : 'fa-check');
-                                  let uiTitle = tool.type === 'call' ? `${this.t('call')} ${tool.title}` : (tool.title || 'Result');
-
-                                  let html = `\n<div class="sap-process-block ${blockClass}" id="${blockId}">`;
-                                  html += `<div class="sp-header"><i class="fa-solid ${iconClass}"></i> ${escapeHtml(uiTitle)}</div>`;
-                                  if (tool.content) { 
-                                      let preIdAttr = tool.type === 'call' ? '' : ` id="pre-result-${toolCallId}"`;
-                                      let readableContent = tool.content;
-                                      // 确保是字符串才执行替换
-                                      if (typeof readableContent === 'string') {
-                                          readableContent = readableContent.replace(/\\n/g, '\n').replace(/\\"/g, '"');
-                                      }
-                                      html += `<pre class="sp-content sp-code"${preIdAttr}>${escapeHtml(readableContent)}</pre>`;
-                                  }
-                                  html += '</div>\n\n';
-                                  currentMsg.content += html;
-                                }
-
+                                // 后端消息存储使用原始内容（可能截断，保护 AI 上下文）
+                                let rawContent = tool.content || '';
                                 if (tool.type === 'call') {
                                     let last = currentMsg.backend_content[currentMsg.backend_content.length - 1];
                                     if (last.role === 'assistant') {
@@ -3033,26 +2949,25 @@ let vue_methods = {
                                         currentMsg.backend_content.push({ role: 'assistant', content: null, tool_calls: [{ id: toolCallId, type: 'function', function: { name: tool.title, arguments: "{}" } }] });
                                     }
                                 } else if (tool.type === 'tool_result' || tool.type === 'tool_result_stream' || tool.type === 'error') {
-                                    const toolContent = (this.toolsSettings.hideToolResults.enabled && tool.type === 'tool_result') 
-                                        ? '<hide to save token>' : (tool.content || '');
-                                    
+                                    const hide = this.toolsSettings?.hideToolResults?.enabled && tool.type === 'tool_result';
+                                    rawContent = hide ? '<hide to save token>' : rawContent;
                                     let updated = false;
-                                    for(let i=currentMsg.backend_content.length-1; i>=0; i--){
-                                        if(currentMsg.backend_content[i].role === 'tool' && currentMsg.backend_content[i].tool_call_id === toolCallId){
-                                            currentMsg.backend_content[i].content = toolContent;
+                                    for (let i = currentMsg.backend_content.length - 1; i >= 0; i--) {
+                                        if (currentMsg.backend_content[i].role === 'tool' && currentMsg.backend_content[i].tool_call_id === toolCallId) {
+                                            currentMsg.backend_content[i].content = rawContent;
                                             updated = true;
                                             break;
                                         }
                                     }
-                                    if(!updated) {
-                                        currentMsg.backend_content.push({ role: 'tool', tool_call_id: toolCallId, name: toolName, content: toolContent });
+                                    if (!updated) {
+                                        currentMsg.backend_content.push({ role: 'tool', tool_call_id: toolCallId, name: toolName, content: rawContent });
                                     }
-                                    if(currentMsg.backend_content[currentMsg.backend_content.length-1].role !== 'assistant'){
+                                    if (currentMsg.backend_content[currentMsg.backend_content.length - 1].role !== 'assistant') {
                                         currentMsg.backend_content.push({ role: 'assistant', content: '' });
                                     }
                                 }
                             }
-                            this.scrollToBottom();
+                            this.requestScrollToBottom();
                         }
 
                         if (delta.audio?.data) {
@@ -3072,19 +2987,23 @@ let vue_methods = {
                     }
                 }
             }
-            
+
+            // 循环结束后，强制刷新缓冲区中剩余的文字
+            if (this._streamUpdateTimer) clearTimeout(this._streamUpdateTimer);
+            this.flushStreamTextBuffer();
+
             if (tts_buffer.trim() && this.ttsSettings.enabled) {
                 currentMsg.chunks_voice.push(this.cur_voice);
                 currentMsg.ttsChunks.push(tts_buffer);
             }
-            
+
             currentMsg.generationFinished = true;
-                        
+
             this.$nextTick(() => {
                 setTimeout(() => {
                     if (window.MathJax) {
                         const els = document.querySelectorAll('.stream-content');
-                        window.MathJax.typesetPromise([...els]).catch(() => {});
+                        window.MathJax.typesetPromise([...els]).catch(() => { });
                     }
                 }, 100);
             });
@@ -3102,18 +3021,14 @@ let vue_methods = {
             console.error(error);
             if (error.name !== 'AbortError') {
                 showNotification(error.message, 'error');
-                
                 const b = getBlock('error', 'err', 'System Error');
-                b.content = error.message;
-
+                b.content = this.truncateDisplayContent(error.message);
                 if (currentMsg) {
                     const fallbackText = 'response error';
                     if (!currentMsg.pure_content && currentMsg.backend_content.length <= 1) {
-                        currentMsg.content = fallbackText;
                         currentMsg.pure_content = fallbackText;
                         currentMsg.backend_content = [{ role: 'assistant', content: fallbackText }];
                     } else {
-                        currentMsg.content += `\n\n<div class="highlight-block-error">${fallbackText}</div>`;
                         const lastBackend = currentMsg.backend_content[currentMsg.backend_content.length - 1];
                         if (lastBackend && lastBackend.role === 'assistant' && lastBackend.tool_calls) {
                             delete lastBackend.tool_calls;
@@ -3128,7 +3043,13 @@ let vue_methods = {
             this.isTyping = false;
             this.voiceStack = ['default'];
             if (this.allBriefly) currentMsg.briefly = true;
-            
+
+            // 清空 content 字段（不再需要 HTML）
+            if (currentMsg) {
+                currentMsg.content = '';
+            }
+
+            // 消息去重和保存
             if (this.conversationId === null) {
                 this.conversationId = uuid.v4();
                 const newConv = {
@@ -3151,12 +3072,46 @@ let vue_methods = {
                     conv.groupId = conv.groupId || this.activeConversationGroupId || this.draftConversationGroupId || 'default';
                 }
             }
+
+            // 清理旧消息，防止 messages 数组无限增长
+            if (this.messages.length > MAX_MESSAGES_COUNT) {
+                const removed = this.messages.splice(0, this.messages.length - MAX_MESSAGES_COUNT);
+                removed.forEach(msg => {
+                    msg.content = '';
+                    msg.pure_content = '';
+                    msg.displayBlocks = [];
+                    msg.backend_content = [];
+                    msg.ttsChunks = [];
+                    msg.audioChunks = [];
+                });
+            }
+
+            // 截断后端消息中过长的 tool content，保护 AI 上下文
             if (currentMsg && currentMsg.backend_content) {
+                const AI_MAX_TOOL_LENGTH = 15000;
                 currentMsg.backend_content.forEach(item => {
-                    if (item.role === 'tool' && item.content) {
-                        // 用户在 UI 看到的是全量，但发给 AI 的 content 在这里被永久截断/清理
-                        item.content = this.truncateForAI(item.content);
+                    if (item.role === 'tool' && item.content && typeof item.content === 'string') {
+                        if (item.content.length > AI_MAX_TOOL_LENGTH) {
+                            item.content = item.content.slice(0, AI_MAX_TOOL_LENGTH) + '\n... (Truncated)';
+                        }
                     }
+                });
+            }
+
+            // 冻结已完成消息的所有 displayBlocks 及内部字符串，减少响应式开销
+            if (currentMsg && Array.isArray(currentMsg.displayBlocks)) {
+                currentMsg.displayBlocks.forEach(block => {
+                    if (!Object.isFrozen(block)) {
+                        Object.freeze(block);
+                        if (typeof block.content === 'string') Object.freeze(block.content);
+                        if (typeof block.args === 'string') Object.freeze(block.args);
+                        if (block.data) Object.freeze(block.data);
+                    }
+                });
+            }
+            if (currentMsg && Array.isArray(currentMsg.backend_content)) {
+                currentMsg.backend_content.forEach(item => {
+                    if (!Object.isFrozen(item)) Object.freeze(item);
                 });
             }
 
@@ -3168,7 +3123,7 @@ let vue_methods = {
 
             this.isThinkOpen = false;
             shouldSyncGroupMemory = !!currentMsg?.pure_content?.trim();
-            
+
             setTimeout(() => {
                 if (!this.isSending && this.audioStartTime <= this.audioCtx.currentTime) {
                     this.sendTTSStatusToVRM('allChunksCompleted', {});
@@ -3178,6 +3133,11 @@ let vue_methods = {
             if (shouldSyncGroupMemory && latestUserMessage?.id && currentMsg?.id) {
                 await this.syncGroupMemoryAfterReply(latestUserMessage, currentMsg);
             }
+
+            // 清理流式缓冲区状态
+            this._streamTargetMsg = null;
+            this._streamTextBuffer = '';
+            if (this._streamUpdateTimer) clearTimeout(this._streamUpdateTimer);
         }
     },
 
@@ -3311,6 +3271,16 @@ let vue_methods = {
         }
     },
 
+
+    getVisibleBlocks(msg) {
+        if (!msg.displayBlocks || !msg.displayBlocks.length) return [];
+        const blocks = msg.displayBlocks;
+        // 如果块总数未超过限制，全量渲染
+        if (blocks.length <= MAX_RENDERED_BLOCKS) return blocks;
+        // 否则只渲染最后 MAX_RENDERED_BLOCKS 个（因为新内容在尾部）
+        return blocks.slice(-MAX_RENDERED_BLOCKS);
+    },
+
     // === 辅助函数 ===
 
     // 辅助：调用后端手动执行接口
@@ -3332,6 +3302,129 @@ let vue_methods = {
         }
     },
     
+
+    // 1. 带截断的工具结果显示
+    truncateDisplayContent(content) {
+        if (typeof content !== 'string') return content;
+        if (content.length > MAX_DISPLAY_LENGTH) {
+            return content.slice(0, MAX_DISPLAY_LENGTH) + '\n... (The result is too long and has been truncated.)';
+        }
+        return content;
+    },
+
+    // 2. 节流版滚动（requestAnimationFrame）
+    requestScrollToBottom() {
+        if (!this.scrollPending) {
+            this.scrollPending = true;
+            requestAnimationFrame(() => {
+                // ✅ 改为调用原始的 scrollToBottom
+                if (typeof this.scrollToBottom === 'function') {
+                    this.scrollToBottom();
+                }
+                this.scrollPending = false;
+            });
+        }
+    },
+
+    // 3. 流式文本批量更新（防抖 80ms）
+    flushStreamTextBuffer() {
+        if (this._streamTargetMsg && this._streamTextBuffer) {
+            const block = this.getBlockForMsg(this._streamTargetMsg, 'text');
+            if (block) {
+                block.content += this._streamTextBuffer;
+                // 同时更新 pure_content 和 content 纯文本（不再拼 HTML）
+                this._streamTargetMsg.pure_content += this._streamTextBuffer;
+                this._streamTargetMsg.content += this._streamTextBuffer;
+            }
+            this._streamTextBuffer = '';
+            // 触发滚动（节流版）
+            this.requestScrollToBottom();
+        }
+    },
+
+
+    isLastActiveBlock(msg, blockIndex) {
+        if (!msg.displayBlocks || msg.displayBlocks.length === 0) return false;
+        const lastBlock = msg.displayBlocks[msg.displayBlocks.length - 1];
+        // 只要该块是最后一个，并且消息还没生成完，就认为是“正在更新的块”
+        if (!msg.generationFinished && blockIndex === msg.displayBlocks.length - 1) {
+            return true;
+        }
+        // 如果已经生成完，最后一块也当作静态块，不再实时展开
+        return false;
+    },
+
+    // 判断是否为工具类块
+    isToolBlock(block) {
+        return block.type === 'tool_call' || block.type === 'tool_result' || block.type === 'reasoning';
+    },
+
+    // 打开工具块详情（点击折叠块时）
+    openToolBlockDetail(message, block) {
+        if (!block || !this.isToolBlock(block)) return;
+        
+        // 直接保存块对象和消息引用
+        this.activeToolBlock = {
+            messageIndex: this.messages.indexOf(message),
+            blockIndex: message.displayBlocks.indexOf(block), // 保留原始索引，用于可能的后续操作
+            block: block
+        };
+        
+        this.activeSideView = 'toolDetail';
+        if (!this.sidePanelOpen) {
+            this.expandSidePanel();
+        }
+        this.updatePanelWidths();
+    },
+
+    // 关闭工具详情
+    closeToolBlockDetail() {
+        this.activeToolBlock = null;
+        this.activeSideView = 'list';  // 回到扩展列表视图
+    },
+
+    // 根据块类型返回对应的图标类名
+    getToolBlockIcon(type) {
+        const icons = {
+            'tool_call': 'fa-solid fa-wrench',
+            'tool_result': 'fa-solid fa-check',
+            'error': 'fa-solid fa-xmark',
+            'approval': 'fa-solid fa-lock'
+        };
+        return icons[type] || 'fa-solid fa-file-lines';
+    },
+
+    // 格式化工具块内容（处理 \n 和 \" 显示）
+    formatToolBlockContent(block) {
+        if (!block) return '';
+        if (block.type === 'approval') {
+            return JSON.stringify(block.data?.tool_params, null, 2);
+        }
+        let content = block.type === 'tool_call' ? (block.args || '') : (block.content || '');
+        if (typeof content !== 'string') content = JSON.stringify(content, null, 2);
+        return content.replace(/\\n/g, '\n').replace(/\\"/g, '"');
+    },
+
+    // 获取消息的指定类型 block（复用原逻辑，但独立出来）
+    getBlockForMsg(msg, type, id = null, name = null) {
+        if (!msg.displayBlocks) msg.displayBlocks = [];
+        if (id) {
+            const existing = msg.displayBlocks.find(b => b.type === type && b.id === id);
+            if (existing) {
+                if (name && !existing.name) existing.name = name;
+                return existing;
+            }
+        }
+        let last = msg.displayBlocks[msg.displayBlocks.length - 1];
+        const canReuse = last && last.type === type && (!id || last.id === id);
+        if (canReuse) {
+            if (name && !last.name) last.name = name;
+            return last;
+        }
+        const newBlock = { type, id, name, content: '', args: '', data: null };
+        msg.displayBlocks.push(newBlock);
+        return newBlock;
+    },
 
     // methods 增加此函数
     smartMergeTerminal(existing, chunk) {
@@ -3965,7 +4058,7 @@ let vue_methods = {
       this.asyncToolsID = [];
       this.inAutoMode = false; // 重置自动模式状态
       this.randomGreetings(); // 重新生成随机问候语
-      this.scrollToBottom();    // 触发界面更新
+      this.requestScrollToBottom();    // 触发界面更新
       this.autoSaveSettings();
       this.sendMessagesToExtension(); // 发送消息到插件
     },
@@ -12899,7 +12992,7 @@ isTargetPlatform(behavior, platformKey) {
               if (choice.delta && choice.delta.content) {
                 result += choice.delta.content;
                 this.messages[index].content = result;
-                this.scrollToBottom();
+                this.requestScrollToBottom();
               }
               // 或者处理 finish_reason 为 stop 的最终响应
               else if (choice.finish_reason === 'stop') {
@@ -12921,7 +13014,7 @@ isTargetPlatform(behavior, platformKey) {
           if (data.choices && data.choices[0] && data.choices[0].delta && data.choices[0].delta.content) {
             result += data.choices[0].delta.content;
             this.messages[index].content = result;
-            this.scrollToBottom();
+            this.requestScrollToBottom();
           }
         } catch (e) {
           console.warn('Failed to parse remaining buffer:', buffer, e);

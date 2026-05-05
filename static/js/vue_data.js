@@ -353,7 +353,7 @@ let vue_data = {
     webSearchSettings: {
       enabled: false,
       engine: 'tavily',
-      crawler: 'jina',
+      crawler: 'mdnew',
       when: 'after_thinking',
       duckduckgo_max_results: 10, // 默认值
       searxng_url: `http://127.0.0.1:8080`,
@@ -2169,7 +2169,7 @@ main();`,
     currentBehaviorIndex: -1,      // 当前编辑的索引，-1 表示新增
     tempBehavior: null,            // 临时编辑对象，避免直接修改原数据
     minLimit: { h: 0, m: 1, s: 0 },
-    activeSideView: 'list', // 'list' | 'tasks' | 'extension'
+    activeSideView: 'list', // 'list' | 'tasks' | 'workspace' | 'toolDetail'
     taskList: [],
     taskRefreshTimer: null,
     showCreateTaskDialog: false,
@@ -2262,4 +2262,11 @@ main();`,
     searchExtensionQuery: '',
     searchManageExtensionQuery: '', // 用于主页面的扩展搜索
     searchRemotePluginQuery: '',    // 用于弹窗内的远程插件搜索
+    scrollPending: false,              // 滚动节流标记
+    _streamUpdateTimer: null,          // 流式文本批量更新定时器
+    _streamTextBuffer: '',             // 流式文本缓冲区
+    _streamTargetMsg: null,            // 当前正在流式更新的消息对象
+    activeToolBlock: null,        // 当前查看的块对象 { messageIndex, blockIndex, block }
+    activeToolBlockMessage: null, // 所属消息引用
+
 };
