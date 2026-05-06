@@ -10558,18 +10558,36 @@ copySubtitleOverlayEndpoint(){
     }
   },
   async rewrite(index){
-    if (index != 1){
-      // 删除this.messages中从index起之后的所有元素，包括index
-      this.messages.splice(index);
-      this.userInput = this.messages[index-1].pure_content??this.messages[index-1].content;
-      // 删除this.messages中最后一个元素
-      this.messages.pop();
-    }else{
-      // 替换开场白
-      this.randomGreetings();
-    }
+      if (index != 1){
+        // 1. 备份要被重写的用户消息（this.messages[index-1]）
+        const targetMsg = this.messages[index - 1];
 
-    await this.sendMessage();
+        // 2. 删除 index 及其之后的所有消息
+        this.messages.splice(index);
+
+        // 3. 恢复文本内容
+        this.userInput = this.messages[index-1]?.pure_content ?? this.messages[index-1]?.content ?? '';
+
+        // 4. 恢复文件/图片信息（从备份中提取，构造不含 Blob 的对象，避免重复上传）
+        this.files = targetMsg.fileLinks
+          ? targetMsg.fileLinks.map(link => ({ name: link.name, path: link.path }))
+          : [];
+        this.images = targetMsg.imageLinks
+          ? targetMsg.imageLinks.map(link => ({
+              name: link.name,
+              path: link.path,
+              detectedType: link.detectedType   // 保留类型信息
+            }))
+          : [];
+
+        // 5. 删除原用户消息（此时已是数组最后一个元素）
+        this.messages.pop();
+      } else {
+        // 替换开场白
+        this.randomGreetings();
+      }
+
+      await this.sendMessage();
   },
   async updateProxy(){
     await this.autoSaveSettings();
