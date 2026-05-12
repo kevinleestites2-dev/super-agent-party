@@ -2823,11 +2823,7 @@ let vue_methods = {
 
                             const b = getBlock('tool_call', toolCallId, progress.name);
                             b.args = accArgs;
-                            // 防抖合并到 displayBlocks
-                            if (this._streamUpdateTimer) clearTimeout(this._streamUpdateTimer);
-                            this._streamUpdateTimer = setTimeout(() => {
-                                this.flushStreamTextBuffer();
-                            }, 80);
+                            this.requestScrollToBottom();
                             continue;
                         }
 
@@ -2884,11 +2880,7 @@ let vue_methods = {
                                 // 不再生成 HTML，直接更新 backend_content
                                 currentMsg.backend_content.push({ role: 'tool', tool_call_id: toolCallId, name: toolName, content: "{}" });
                                 currentMsg.backend_content.push({ role: 'assistant', content: '' });
-                                // 防抖合并到 displayBlocks
-                                if (this._streamUpdateTimer) clearTimeout(this._streamUpdateTimer);
-                                this._streamUpdateTimer = setTimeout(() => {
-                                    this.flushStreamTextBuffer();
-                                }, 80);
+                                this.requestScrollToBottom();
                             }
                             else if (tool.type === 'tool_result_stream' && tool.title === "tool_result_stream") {
                                 const targetBlock = getBlock('tool_result', toolCallId, toolName);
@@ -2951,11 +2943,7 @@ let vue_methods = {
                                     }
                                 }
                             }
-                            // 防抖合并到 displayBlocks
-                            if (this._streamUpdateTimer) clearTimeout(this._streamUpdateTimer);
-                            this._streamUpdateTimer = setTimeout(() => {
-                                this.flushStreamTextBuffer();
-                            }, 80);
+                            this.requestScrollToBottom();
                         }
 
                         if (delta.audio?.data) {
