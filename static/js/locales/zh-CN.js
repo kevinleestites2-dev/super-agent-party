@@ -107,6 +107,8 @@ window.lang_zhCN = {
         'generalSettings': '通用',
         'appearanceSettings': '外观',
         'appearancePreviewText': '代码块预览',
+        'autoCollapseInput': '自动折叠输入框',
+        'autoCollapseInputDesc': '不输入时折叠输入框',
         'launching': '正在启动...',
         'launchBrowserMode': '启动浏览器模式',
         'reasonerConfig': '推理配置',

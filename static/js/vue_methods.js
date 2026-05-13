@@ -1966,6 +1966,9 @@ let vue_methods = {
           if (this.systemSettings && (this.systemSettings.codeFontScale === undefined || this.systemSettings.codeFontScale === null)) {
             this.systemSettings.codeFontScale = 1;
           }
+          if (this.systemSettings && (this.systemSettings.autoCollapseInput === undefined || this.systemSettings.autoCollapseInput === null)) {
+            this.systemSettings.autoCollapseInput = false;
+          }
           this.showBrowserChat = data.data.showBrowserChat || this.showBrowserChat;
           this.searchEngine = data.data.searchEngine || this.searchEngine;
           if (data.data.largeMoreButtonDict) {
@@ -7217,6 +7220,20 @@ handleCreateSlackSeparator(val) {
       },
       toggleInputExpand() {
         this.isInputExpanded = !this.isInputExpanded
+    },
+    onChatInputFocus() {
+      this.isChatInputActive = true;
+    },
+    // textarea 失焦后延迟一帧再判定，给 pill / dialog 的 click 留出落点时间
+    onChatInputBlur() {
+      setTimeout(() => {
+        const active = document.activeElement;
+        const wrappers = document.querySelectorAll('.unified-input-wrapper');
+        for (const w of wrappers) {
+          if (w.contains(active)) return;
+        }
+        this.isChatInputActive = false;
+      }, 200);
     },
     checkMobile() {
       this.isMobile = window.innerWidth <= 768;

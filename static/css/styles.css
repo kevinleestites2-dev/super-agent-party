@@ -8956,6 +8956,36 @@ hr.footnotes-sep {
   margin-left: auto !important;
 }
 
+/* 折叠态：放在发送按钮左侧的 compact pill */
+.unified-input-wrapper .button-group .compact-status-pill {
+  height: 32px !important;
+  max-width: 200px;
+  padding: 0 12px !important;
+  font-size: 12px !important;
+  flex-shrink: 1;
+  min-width: 0;
+}
+.unified-input-wrapper .button-group .compact-status-pill .pill-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 当 button-group 里出现 compact pill 时，由首个 pill 顶替 send-btn 的 auto 占位，
+ * 让 [pill][pill][send-btn] 整组贴在按钮组右侧。 */
+.unified-input-wrapper .button-group:has(.compact-status-pill) .compact-status-pill:first-of-type {
+  margin-left: auto !important;
+}
+.unified-input-wrapper .button-group:has(.compact-status-pill) .send-btn {
+  margin-left: 0 !important;
+}
+
+/* textarea 高度（1↔多行）切换的平滑过渡 */
+.unified-input-wrapper .input-box-transparent .el-textarea__inner {
+  transition:
+    min-height 0.25s var(--ease-out-smooth),
+    height 0.25s var(--ease-out-smooth);
+}
+
 /* 容器基本样式 */
 .input-container-wrapper {
   position: relative;

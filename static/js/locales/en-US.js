@@ -107,6 +107,8 @@ window.lang_enUS = {
         'generalSettings': 'General',
         'appearanceSettings': 'Appearance',
         'appearancePreviewText': 'Code Block Preview',
+        'autoCollapseInput': 'Auto-collapse Chat Input',
+        'autoCollapseInputDesc': 'Collapse input when not typing',
         'launching': 'Launching...',
         'launchBrowserMode': 'Launch Browser Mode',
         'reasonerConfig': 'Reasoner Config',
