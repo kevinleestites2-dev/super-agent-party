@@ -224,7 +224,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: false
 
-  # ────────── macOS Universal ──────────
+  # ────────── macOS Apple Silicon (arm64) ──────────
   build-macos:
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (inputs.platform == 'all' || inputs.platform == 'macos'))
     runs-on: macos-latest
@@ -247,7 +247,7 @@ jobs:
             git push origin "v${{ inputs.version }}"
           fi
 
-      - name: Set up Python (arm64)
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -257,7 +257,7 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Install Python dependencies (arm64)
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install uv
@@ -267,81 +267,12 @@ jobs:
       - name: Install Node.js dependencies
         run: npm install
 
-      # ========== 构建 arm64 后端 ==========
-      - name: Build Python backend (arm64)
+      - name: Build Python backend
         run: |
           uv add pyinstaller
           uv run pyinstaller server.spec
-          mv dist/server dist/server_arm64
 
-      # ========== 构建 x86_64 后端 (通过 Rosetta 2) ==========
-      - name: Setup x86_64 Python via Rosetta
-        run: |
-          curl -L https://github.com/indygreg/python-build-standalone/releases/download/20241002/cpython-3.12.7+20241002-x86_64-apple-darwin-install_only.tar.gz -o python-x64.tar.gz
-          mkdir -p python-x64
-          tar -xzf python-x64.tar.gz -C python-x64
-          
-          # 获取解释器绝对路径 (不再创建软链接，避免破坏路径解析)
-          PYTHON_X64="$(pwd)/python-x64/python/bin/python3"
-          
-          # 验证解释器确实是 x86_64
-          arch -x86_64 "$PYTHON_X64" -c "import platform; print('Python arch:', platform.machine())"
-
-      - name: Install Python dependencies (x86_64)
-        run: |
-          PYTHON_X64="$(pwd)/python-x64/python/bin/python3"
-          
-          # 1. 删除前一阶段(arm64)留下的虚拟环境，防止架构冲突
-          rm -rf .venv
-
-          # 2. 直接使用外部的 uv，指定 x86_64 解释器创建全新的环境并安装依赖
-          # uv 原生构建虚拟环境且不依赖 ensurepip，完美解决之前的报错
-          uv sync --python "$PYTHON_X64"
-
-          # 3. 验证新建虚拟环境的架构
-          .venv/bin/python -c "import platform; print('Virtualenv Python arch:', platform.machine())"
-          .venv/bin/python -c "import platform; assert platform.machine() == 'x86_64', '不是 x86_64！'"
-
-      - name: Build Python backend (x86_64)
-        run: |
-          # 注意：前面 arm64 阶段已执行过 uv add pyinstaller 写入了 pyproject.toml，
-          # 因此上一步 uv sync 已经为你安装好了 pyinstaller，可以直接打包
-          
-          # 再次确认执行环境
-          echo "=== Build Python arch ==="
-          uv run python -c "import platform; assert platform.machine() == 'x86_64', 'Build Python is not x86_64!'; print('OK')"
-
-          # 运行 PyInstaller
-          uv run pyinstaller server.spec
-
-          # 验证产出的 server 二进制架构
-          echo "=== Output binary arch ==="
-          file dist/server/server
-
-          mv dist/server dist/server_x64
-
-      # ========== 合并为 Universal Binary ==========
-      - name: Create Universal Python backend
-        run: |
-          echo "=== arm64 产物架构 ==="
-          file dist/server_arm64/server
-          
-          echo "=== x86_64 产物架构 ==="
-          file dist/server_x64/server
-          
-          # 合并
-          mkdir -p dist/server
-          lipo -create dist/server_arm64/server dist/server_x64/server -output dist/server/server
-          chmod +x dist/server/server
-          
-          echo "=== Universal 产物架构 ==="
-          file dist/server/server
-          lipo -info dist/server/server
-          
-          # 复制其他文件
-          cp -rn dist/server_arm64/* dist/server/ 2>/dev/null || true
-
-      - name: Build and Publish Electron app (macOS Universal)
+      - name: Build and Publish Electron app (macOS arm64)
         shell: bash
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
@@ -353,7 +284,7 @@ jobs:
           else
             PUBLISH_FLAG="--publish always"
           fi
-          npx electron-builder build --mac --universal $PUBLISH_FLAG
+          npx electron-builder build --mac --arm64 $PUBLISH_FLAG
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: false
